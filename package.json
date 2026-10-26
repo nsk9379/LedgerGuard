@@ -1,7 +1,7 @@
 {
-  "name": "financial-ledger-api",
+  "name": "ledgerguard-api",
   "version": "1.0.0",
-  "description": "Financial Ledger API with Double-Entry Bookkeeping",
+  "description": "LedgerGuard — Banking Transaction Integrity System",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

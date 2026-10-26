@@ -81,16 +81,22 @@ const createTables = async () => {
     await client.query('COMMIT');
     console.log('✅ Database migration completed successfully.');
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('❌ Rollback failed:', rollbackErr.message);
+      }
+    }
     console.error('❌ Migration failed:', err.message);
     throw err;
   } finally {
-    client.release();
+    if (client) client.release();
     await pool.end();
   }
 };
 
 createTables().catch((err) => {
-  console.error(err);
+  console.error('❌ Migration process exited with error.');
   process.exit(1);
 });

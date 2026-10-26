@@ -7,6 +7,15 @@ const seed = async () => {
   try {
     await client.query('BEGIN');
 
+    // Check if demo data is already present to prevent duplicate records
+    const existing = await client.query(
+      `SELECT COUNT(*) AS count FROM accounts WHERE description IN ('Alice Checking Account', 'Bob Savings Account')`
+    );
+    if (parseInt(existing.rows[0].count, 10) > 0) {
+      console.log('ℹ️ Seed data already present. Skipping seeding to prevent duplicates.');
+      return;
+    }
+
     const userId1 = uuidv4();
     const userId2 = uuidv4();
 
@@ -45,12 +54,22 @@ const seed = async () => {
     console.log(`   Alice Account ID : ${accountId1}`);
     console.log(`   Bob   Account ID : ${accountId2}`);
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('❌ Rollback failed:', rollbackErr.message);
+      }
+    }
     console.error('❌ Seeding failed:', err.message);
+    throw err;
   } finally {
-    client.release();
+    if (client) client.release();
     await pool.end();
   }
 };
 
-seed();
+seed().catch((err) => {
+  console.error('❌ Seed process exited with error.');
+  process.exit(1);
+});
