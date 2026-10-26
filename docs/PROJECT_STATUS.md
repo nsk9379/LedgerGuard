@@ -100,9 +100,29 @@
 
 ---
 
-## 5. Next Recommended Step
+## 5. Phase 6 Completion: Minimal Local Dashboard (EJS)
 
-**Phase 6: Minimal Local Dashboard (EJS)**
-1. Implement a local-only administration and audit dashboard using server-rendered EJS templates.
-2. Provide views for account lists, ledger inspection, transaction submission, and live reconciliation health reports.
-3. Keep the dashboard local without external dependencies or cloud assets.
+A local-only, server-rendered EJS demonstration dashboard has been implemented with zero external runtime or CDN dependencies.
+
+### Features Implemented:
+1. **Accounts & Balances (`GET /dashboard/api/accounts`)**:
+   - Lists all accounts with ledger-derived balances computed directly in PostgreSQL (`NUMERIC(20,4)`).
+   - Instant search/filter, 1-click UUID copy buttons, and quick "From" / "To" account assigners.
+   - Per-account interactive ledger audit modal (`GET /accounts/:id/ledger`).
+2. **Recent Transactions Trail (`GET /dashboard/api/transactions`)**:
+   - Real-time audit log of transfers, deposits, and withdrawals with status indicators.
+3. **Transfer Execution Simulator (`POST /transfers`)**:
+   - Executes real atomic double-entry transfers via the existing backend API.
+   - Built-in `Idempotency-Key` generator and controls.
+   - Interactive testing triggers:
+     - **Test Replay**: Resubmits identical payload with the same key to verify HTTP 200 `replayed: true` and confirm no duplicate debit occurs.
+     - **Test Conflict**: Mutates payload with the same key to verify HTTP 409 Conflict rejection.
+   - Clear and safe user feedback for success (201), replayed (200), conflict (409), insufficient funds (422), and validation errors (400), with zero raw stack traces.
+4. **Ledger Reconciliation Monitor (`GET /reports/reconciliation`)**:
+   - Live reconciliation widget showing system double-entry balance status, completed transactions inspected, valid journal entries count, and discrepancy reporting.
+   - On-demand "Re-Audit Ledger" trigger button.
+5. **Aesthetics & Architecture**:
+   - Modern, high-end fintech dark theme using vanilla CSS tokens, glassmorphism, and responsive CSS Grid.
+   - 100% self-contained: local CSS (`public/css/style.css`), local client JS (`public/js/dashboard.js`), no CDNs or external services.
+   - Complete integration test suite in `tests/dashboard.test.js` (61 total passing tests across the repository).
+
