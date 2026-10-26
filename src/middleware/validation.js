@@ -14,33 +14,37 @@ const validate = (schema) => (req, res, next) => {
   next();
 };
 
+// Maximum amount allowed for NUMERIC(20,4) (16 digits integer, 4 digits precision)
+const MAX_NUMERIC_AMOUNT = 9999999999999999.9999;
+const amountSchema = Joi.number().positive().precision(4).max(MAX_NUMERIC_AMOUNT).required();
+
 const schemas = {
   createAccount: Joi.object({
     userId: Joi.string().uuid().required(),
     accountType: Joi.string().valid('checking', 'savings', 'business', 'loan').required(),
-    currency: Joi.string().length(3).uppercase().default('USD'),
+    currency: Joi.string().length(3).uppercase().default('INR'),
     description: Joi.string().max(255).optional().allow(''),
   }),
 
   transfer: Joi.object({
     sourceAccountId: Joi.string().uuid().required(),
     destinationAccountId: Joi.string().uuid().required(),
-    amount: Joi.number().positive().precision(4).required(),
-    currency: Joi.string().length(3).uppercase().default('USD'),
+    amount: amountSchema,
+    currency: Joi.string().length(3).uppercase().default('INR'),
     description: Joi.string().max(500).optional().allow(''),
   }),
 
   deposit: Joi.object({
     accountId: Joi.string().uuid().required(),
-    amount: Joi.number().positive().precision(4).required(),
-    currency: Joi.string().length(3).uppercase().default('USD'),
+    amount: amountSchema,
+    currency: Joi.string().length(3).uppercase().default('INR'),
     description: Joi.string().max(500).optional().allow(''),
   }),
 
   withdrawal: Joi.object({
     accountId: Joi.string().uuid().required(),
-    amount: Joi.number().positive().precision(4).required(),
-    currency: Joi.string().length(3).uppercase().default('USD'),
+    amount: amountSchema,
+    currency: Joi.string().length(3).uppercase().default('INR'),
     description: Joi.string().max(500).optional().allow(''),
   }),
 };

@@ -7,18 +7,27 @@ const seed = async () => {
   try {
     await client.query('BEGIN');
 
+    // Check if demo data is already present to prevent duplicate records
+    const existing = await client.query(
+      `SELECT COUNT(*) AS count FROM accounts WHERE description IN ('Alice Checking Account', 'Bob Savings Account')`
+    );
+    if (parseInt(existing.rows[0].count, 10) > 0) {
+      console.log('ℹ️ Seed data already present. Skipping seeding to prevent duplicates.');
+      return;
+    }
+
     const userId1 = uuidv4();
     const userId2 = uuidv4();
 
     // Create two demo accounts
     const acc1 = await client.query(
       `INSERT INTO accounts (user_id, account_type, currency, description)
-       VALUES ($1, 'checking', 'USD', 'Alice Checking Account') RETURNING id`,
+       VALUES ($1, 'checking', 'INR', 'Alice Checking Account') RETURNING id`,
       [userId1]
     );
     const acc2 = await client.query(
       `INSERT INTO accounts (user_id, account_type, currency, description)
-       VALUES ($1, 'savings', 'USD', 'Bob Savings Account') RETURNING id`,
+       VALUES ($1, 'savings', 'INR', 'Bob Savings Account') RETURNING id`,
       [userId2]
     );
 
@@ -28,7 +37,7 @@ const seed = async () => {
     // Seed a deposit into Alice's account
     const txn = await client.query(
       `INSERT INTO transactions (type, destination_account_id, amount, currency, status, description)
-       VALUES ('deposit', $1, 1000.0000, 'USD', 'completed', 'Initial seed deposit')
+       VALUES ('deposit', $1, 1000.0000, 'INR', 'completed', 'Initial seed deposit')
        RETURNING id`,
       [accountId1]
     );
@@ -45,12 +54,22 @@ const seed = async () => {
     console.log(`   Alice Account ID : ${accountId1}`);
     console.log(`   Bob   Account ID : ${accountId2}`);
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('❌ Rollback failed:', rollbackErr.message);
+      }
+    }
     console.error('❌ Seeding failed:', err.message);
+    throw err;
   } finally {
-    client.release();
+    if (client) client.release();
     await pool.end();
   }
 };
 
-seed();
+seed().catch((err) => {
+  console.error('❌ Seed process exited with error.');
+  process.exit(1);
+});
