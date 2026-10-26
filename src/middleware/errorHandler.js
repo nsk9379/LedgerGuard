@@ -17,7 +17,7 @@ const errorHandler = (err, req, res, next) => {
       case '23503': // foreign key violation
         return res.status(400).json({ status: 'error', message: 'Referenced record does not exist.' });
       case '23514': // check constraint violation
-        return res.status(422).json({ status: 'error', message: 'Constraint violation: ' + err.detail });
+        return res.status(422).json({ status: 'error', message: 'Data constraint violation.' });
       default:
         break;
     }
