@@ -5,7 +5,7 @@ class TransactionModel {
    * Create a pending transaction record
    */
   static async create(
-    { type, sourceAccountId, destinationAccountId, amount, currency = 'USD', description = '' },
+    { type, sourceAccountId, destinationAccountId, amount, currency = 'INR', description = '' },
     client = pool
   ) {
     const result = await client.query(

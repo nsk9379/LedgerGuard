@@ -12,7 +12,7 @@ const createTables = async () => {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID NOT NULL,
         account_type VARCHAR(20) NOT NULL CHECK (account_type IN ('checking', 'savings', 'business', 'loan')),
-        currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+        currency VARCHAR(3) NOT NULL DEFAULT 'INR',
         status VARCHAR(10) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'frozen', 'closed')),
         description VARCHAR(255),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -28,12 +28,31 @@ const createTables = async () => {
         source_account_id UUID REFERENCES accounts(id),
         destination_account_id UUID REFERENCES accounts(id),
         amount NUMERIC(20, 4) NOT NULL CHECK (amount > 0),
-        currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+        currency VARCHAR(3) NOT NULL DEFAULT 'INR',
         status VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
         description VARCHAR(500),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+    `);
+
+    // Additive migration: Ensure default currency is INR for existing schemas
+    await client.query(`ALTER TABLE accounts ALTER COLUMN currency SET DEFAULT 'INR';`);
+    await client.query(`ALTER TABLE transactions ALTER COLUMN currency SET DEFAULT 'INR';`);
+
+    // Localize starter demo records to INR (rerunnable, preserves unrelated historical/test records)
+    await client.query(`
+      UPDATE accounts
+      SET currency = 'INR', updated_at = NOW()
+      WHERE description IN ('Alice Checking Account', 'Bob Savings Account')
+        AND currency != 'INR';
+    `);
+
+    await client.query(`
+      UPDATE transactions
+      SET currency = 'INR', updated_at = NOW()
+      WHERE description = 'Initial seed deposit'
+        AND currency != 'INR';
     `);
 
     // Ledger entries table — immutable, no UPDATE/DELETE allowed via app logic

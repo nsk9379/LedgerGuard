@@ -1,6 +1,6 @@
 # Project Status: LedgerGuard — Banking Transaction Integrity System
 
-**Current Stage:** Stage 2 — Local Database Configuration & Baseline Validation  
+**Current Stage:** Stage 3 — Correctness Review & Transaction Integrity Hardening  
 **Date:** October 26, 2026  
 **Git Branch:** `ledgerguard-development`  
 **Upstream Base:** `https://github.com/KONDIUMAVARALAKSHMI/double-entry-ledger-api.git` (tracked as `upstream`)  
@@ -23,6 +23,14 @@
   - Connected to local PostgreSQL database `ledgerguard_dev`.
   - Executed `npm run db:migrate` and verified rerun idempotency.
   - Executed `npm run db:seed` once, verified demo data creation, and confirmed that rerun safely skips duplication.
+- **Stage 3: Correctness Review & Transaction Integrity Hardening (Completed):**
+  - **Deadlock fix:** [`src/services/transaction.service.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/services/transaction.service.js) — `SELECT ... FOR UPDATE` locks now acquired in deterministic ascending UUID order. Concurrent bi-directional transfers can no longer create circular waits.
+  - **Currency validation enforced:** Deposits, withdrawals, and transfers now reject transactions whose requested currency differs from the account's stored currency. Cross-currency transfers (e.g. INR → USD) are explicitly blocked.
+  - **DB-level NUMERIC balance check:** Added `AccountModel.checkSufficientFunds()` that compares `amount >= $2::NUMERIC(20,4)` inside PostgreSQL. The application no longer relies on `parseFloat` for the funds-availability decision, eliminating JS float rounding risks.
+  - **Ledger immutability verified:** Tests confirmed that direct SQL `UPDATE` and `DELETE` on `ledger_entries` silently return `rowCount = 0` and leave data unchanged, proving the `DO INSTEAD NOTHING` DB rules work correctly.
+  - **INR localization (additive migration):** `accounts` and `transactions` default currency changed to `INR`. Demo records (Alice Checking Account, Bob Savings Account, Initial seed deposit) migrated to INR via rerunnable `WHERE description IN (...)` conditional `UPDATE`. 16 historical test accounts with blank descriptions left untouched. `npm run db:migrate` succeeded twice (idempotent).
+  - **Self-transfer guard moved before DB connection:** Prevents pool exhaustion on that rejection path.
+  - **Tests expanded from 20 → 35.** All 35 passed (`npm test`, exit code 0).
   - Executed full test suite (`npm test`); all 20 tests passed.
 
 ---

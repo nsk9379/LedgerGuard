@@ -7,47 +7,89 @@ class TransactionService {
   /**
    * Execute a transfer between two accounts.
    * Uses a single ACID transaction with REPEATABLE READ isolation.
-   * Creates exactly two ledger entries: one debit, one credit.
-   * Prevents negative balances via locked balance check before commit.
+   * Creates exactly two balanced ledger entries: one debit, one credit.
+   * Prevents negative balances via DB-level NUMERIC balance check.
+   *
+   * DEADLOCK PREVENTION: Accounts are always locked in ascending UUID order
+   * so concurrent opposite-direction transfers cannot create circular waits.
+   *
+   * CURRENCY VALIDATION: Transaction currency must match both account currencies.
    */
   static async transfer({ sourceAccountId, destinationAccountId, amount, currency, description }) {
+    // Reject self-transfer before opening any DB resources
+    if (sourceAccountId === destinationAccountId) {
+      throw { statusCode: 400, message: 'Source and destination accounts must be different.' };
+    }
+
     const client = await pool.connect();
     try {
       // Use REPEATABLE READ to prevent dirty reads and non-repeatable reads
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
 
-      // Lock both accounts to prevent race conditions
-      const sourceAccount = await client.query(
+      // --- DEADLOCK-SAFE LOCK ACQUISITION ---
+      // Always acquire locks in deterministic ascending UUID order so two
+      // simultaneous cross-direction transfers cannot deadlock on circular waits.
+      const [firstId, secondId] = [sourceAccountId, destinationAccountId].sort();
+
+      const firstLock = await client.query(
         `SELECT id, status, currency FROM accounts WHERE id = $1 FOR UPDATE`,
-        [sourceAccountId]
+        [firstId]
       );
-      const destAccount = await client.query(
+      const secondLock = await client.query(
         `SELECT id, status, currency FROM accounts WHERE id = $1 FOR UPDATE`,
-        [destinationAccountId]
+        [secondId]
       );
 
-      if (sourceAccount.rows.length === 0) {
+      // Map back to named variables for clarity
+      const allLocked = [firstLock, secondLock];
+      const sourceRow = allLocked.find((r) => r.rows[0] && r.rows[0].id === sourceAccountId);
+      const destRow = allLocked.find((r) => r.rows[0] && r.rows[0].id === destinationAccountId);
+
+      if (!sourceRow || sourceRow.rows.length === 0) {
         throw { statusCode: 404, message: `Source account not found: ${sourceAccountId}` };
       }
-      if (destAccount.rows.length === 0) {
+      if (!destRow || destRow.rows.length === 0) {
         throw { statusCode: 404, message: `Destination account not found: ${destinationAccountId}` };
       }
-      if (sourceAccount.rows[0].status !== 'active') {
+
+      const src = sourceRow.rows[0];
+      const dest = destRow.rows[0];
+
+      if (src.status !== 'active') {
         throw { statusCode: 422, message: 'Source account is not active.' };
       }
-      if (destAccount.rows[0].status !== 'active') {
+      if (dest.status !== 'active') {
         throw { statusCode: 422, message: 'Destination account is not active.' };
       }
-      if (sourceAccountId === destinationAccountId) {
-        throw { statusCode: 400, message: 'Source and destination accounts must be different.' };
-      }
 
-      // Calculate current balance of source account
-      const sourceBalance = await AccountModel.calculateBalance(sourceAccountId, client);
-      if (sourceBalance < amount) {
+      // --- CURRENCY VALIDATION ---
+      // Transaction currency must match source account currency
+      if (currency && src.currency !== currency) {
         throw {
           statusCode: 422,
-          message: `Insufficient funds. Available balance: ${sourceBalance}, required: ${amount}`,
+          message: `Currency mismatch: source account currency is ${src.currency}, transaction currency is ${currency}.`,
+        };
+      }
+      // Source and destination must share the same currency
+      if (src.currency !== dest.currency) {
+        throw {
+          statusCode: 422,
+          message: `Cross-currency transfers are not supported: source is ${src.currency}, destination is ${dest.currency}.`,
+        };
+      }
+      // Resolved currency: use account currency (canonical)
+      const resolvedCurrency = src.currency;
+
+      // --- BALANCE CHECK (DB-level NUMERIC comparison, avoids JS float rounding) ---
+      const { currentBalance, hasSufficientFunds } = await AccountModel.checkSufficientFunds(
+        sourceAccountId,
+        amount,
+        client
+      );
+      if (!hasSufficientFunds) {
+        throw {
+          statusCode: 422,
+          message: `Insufficient funds. Available balance: ${currentBalance} ${resolvedCurrency}, required: ${amount} ${resolvedCurrency}`,
         };
       }
 
@@ -58,7 +100,7 @@ class TransactionService {
           sourceAccountId,
           destinationAccountId,
           amount,
-          currency,
+          currency: resolvedCurrency,
           description,
         },
         client
@@ -88,7 +130,8 @@ class TransactionService {
         client
       );
 
-      // Verify double-entry balance: debit amount + (-credit amount) = 0
+      // Verify double-entry balance integrity using DB NUMERIC string comparison
+      // (debitEntry.amount and creditEntry.amount come back as NUMERIC strings from pg)
       if (debitEntry.amount !== creditEntry.amount) {
         throw { statusCode: 500, message: 'Double-entry integrity check failed.' };
       }
@@ -105,7 +148,6 @@ class TransactionService {
       };
     } catch (err) {
       await client.query('ROLLBACK');
-      // Mark transaction as failed if it was created
       throw err;
     } finally {
       client.release();
@@ -113,8 +155,9 @@ class TransactionService {
   }
 
   /**
-   * Simulate a deposit into an account.
+   * Deposit into an account.
    * Creates a single credit ledger entry.
+   * CURRENCY VALIDATION: Transaction currency must match account currency.
    */
   static async deposit({ destinationAccountId, amount, currency, description }) {
     const client = await pool.connect();
@@ -122,7 +165,7 @@ class TransactionService {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
 
       const destAccount = await client.query(
-        `SELECT id, status FROM accounts WHERE id = $1 FOR UPDATE`,
+        `SELECT id, status, currency FROM accounts WHERE id = $1 FOR UPDATE`,
         [destinationAccountId]
       );
 
@@ -133,12 +176,23 @@ class TransactionService {
         throw { statusCode: 422, message: 'Account is not active.' };
       }
 
+      const accountCurrency = destAccount.rows[0].currency;
+
+      // Currency must match account currency
+      if (currency && accountCurrency !== currency) {
+        throw {
+          statusCode: 422,
+          message: `Currency mismatch: account currency is ${accountCurrency}, transaction currency is ${currency}.`,
+        };
+      }
+      const resolvedCurrency = accountCurrency;
+
       const transaction = await TransactionModel.create(
         {
           type: 'deposit',
           destinationAccountId,
           amount,
-          currency,
+          currency: resolvedCurrency,
           description,
         },
         client
@@ -168,9 +222,10 @@ class TransactionService {
   }
 
   /**
-   * Simulate a withdrawal from an account.
+   * Withdrawal from an account.
    * Creates a single debit ledger entry.
-   * Prevents negative balance.
+   * Prevents negative balance via DB-level NUMERIC comparison.
+   * CURRENCY VALIDATION: Transaction currency must match account currency.
    */
   static async withdrawal({ sourceAccountId, amount, currency, description }) {
     const client = await pool.connect();
@@ -178,7 +233,7 @@ class TransactionService {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
 
       const srcAccount = await client.query(
-        `SELECT id, status FROM accounts WHERE id = $1 FOR UPDATE`,
+        `SELECT id, status, currency FROM accounts WHERE id = $1 FOR UPDATE`,
         [sourceAccountId]
       );
 
@@ -189,11 +244,27 @@ class TransactionService {
         throw { statusCode: 422, message: 'Account is not active.' };
       }
 
-      const currentBalance = await AccountModel.calculateBalance(sourceAccountId, client);
-      if (currentBalance < amount) {
+      const accountCurrency = srcAccount.rows[0].currency;
+
+      // Currency must match account currency
+      if (currency && accountCurrency !== currency) {
         throw {
           statusCode: 422,
-          message: `Insufficient funds. Available balance: ${currentBalance}, requested: ${amount}`,
+          message: `Currency mismatch: account currency is ${accountCurrency}, transaction currency is ${currency}.`,
+        };
+      }
+      const resolvedCurrency = accountCurrency;
+
+      // --- BALANCE CHECK (DB-level NUMERIC comparison) ---
+      const { currentBalance, hasSufficientFunds } = await AccountModel.checkSufficientFunds(
+        sourceAccountId,
+        amount,
+        client
+      );
+      if (!hasSufficientFunds) {
+        throw {
+          statusCode: 422,
+          message: `Insufficient funds. Available balance: ${currentBalance} ${resolvedCurrency}, requested: ${amount} ${resolvedCurrency}`,
         };
       }
 
@@ -202,7 +273,7 @@ class TransactionService {
           type: 'withdrawal',
           sourceAccountId,
           amount,
-          currency,
+          currency: resolvedCurrency,
           description,
         },
         client

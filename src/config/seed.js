@@ -22,12 +22,12 @@ const seed = async () => {
     // Create two demo accounts
     const acc1 = await client.query(
       `INSERT INTO accounts (user_id, account_type, currency, description)
-       VALUES ($1, 'checking', 'USD', 'Alice Checking Account') RETURNING id`,
+       VALUES ($1, 'checking', 'INR', 'Alice Checking Account') RETURNING id`,
       [userId1]
     );
     const acc2 = await client.query(
       `INSERT INTO accounts (user_id, account_type, currency, description)
-       VALUES ($1, 'savings', 'USD', 'Bob Savings Account') RETURNING id`,
+       VALUES ($1, 'savings', 'INR', 'Bob Savings Account') RETURNING id`,
       [userId2]
     );
 
@@ -37,7 +37,7 @@ const seed = async () => {
     // Seed a deposit into Alice's account
     const txn = await client.query(
       `INSERT INTO transactions (type, destination_account_id, amount, currency, status, description)
-       VALUES ('deposit', $1, 1000.0000, 'USD', 'completed', 'Initial seed deposit')
+       VALUES ('deposit', $1, 1000.0000, 'INR', 'completed', 'Initial seed deposit')
        RETURNING id`,
       [accountId1]
     );
