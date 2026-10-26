@@ -5,6 +5,7 @@ const cors = require('cors');
 
 const accountRoutes = require('./routes/account.routes');
 const transactionRoutes = require('./routes/transaction.routes');
+const reportRoutes = require('./routes/report.routes');
 const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
@@ -21,6 +22,7 @@ app.get('/health', (req, res) => {
 
 // API Routes
 app.use('/accounts', accountRoutes);
+app.use('/reports', reportRoutes);
 app.use('/', transactionRoutes);
 
 // 404 handler

@@ -254,10 +254,104 @@ Content-Type: application/json
 {
   "accountId": "uuid",
   "amount": 200.00,
-  "currency": "USD",
+  "currency": "INR",
   "description": "ATM withdrawal"
 }
 ```
+
+---
+
+### Reports
+
+#### Ledger Reconciliation Report (Read-Only)
+```
+GET /reports/reconciliation
+```
+
+Inspects transactions in the database and verifies that ledger postings strictly conform to double-entry banking rules. Does not alter, delete, or repair any records.
+
+**Optional Query Parameters:**
+- `transactionId` (UUID): Scope reconciliation to a specific transaction.
+- `status` (`completed` | `pending` | `failed`): Filter verification by transaction status.
+- `limit` (integer): Paginate the inspection set.
+- `offset` (integer): Pagination offset.
+
+##### Expected Posting Patterns:
+- **`transfer`**: Exactly one `debit` for the source account and one `credit` for the destination account; both amounts must equal the transaction amount (`NUMERIC(20,4)`).
+- **`deposit`**: Exactly one `credit` to the destination account, equal to the transaction amount.
+- **`withdrawal`**: Exactly one `debit` from the source account, equal to the transaction amount.
+- **`pending` / `failed`**: Must have zero posted ledger entries. Non-completed transactions with entries are flagged as discrepancies.
+- **Currency Invariants**: Verifies schema consistency; accounts and transactions must agree on currency.
+
+##### Detected Discrepancy Types:
+- `MISSING_LEDGER_ENTRIES`: Completed transaction lacks expected ledger entries.
+- `EXTRA_LEDGER_ENTRIES`: More entries exist than permitted for the transaction type.
+- `WRONG_DIRECTION`: Inverted debit/credit assignments.
+- `WRONG_ACCOUNT`: Entry account ID does not match transaction source/destination.
+- `AMOUNT_MISMATCH`: Ledger entry amount differs from transaction amount (compared using exact database numeric semantics).
+- `CURRENCY_MISMATCH`: Account currency conflicts with transaction currency or cross-currency transfer.
+- `UNEXPECTED_ENTRIES_FOR_NON_COMPLETED_TRANSACTION`: Pending or failed transaction has posted entries.
+- `ORPHANED_LEDGER_ENTRIES`: Ledger entry references a non-existent transaction ID.
+
+##### Response `200 OK` (Balanced):
+```json
+{
+  "status": "success",
+  "data": {
+    "summary": {
+      "totalTransactionsChecked": 45,
+      "completedTransactionsChecked": 41,
+      "pendingTransactions": 2,
+      "failedTransactions": 2,
+      "validTransactions": 45,
+      "discrepantTransactionsCount": 0,
+      "discrepancyCount": 0,
+      "orphanedLedgerEntriesCount": 0,
+      "reconciliationStatus": "BALANCED",
+      "checkedAt": "2026-10-26T18:15:38.123Z"
+    },
+    "findings": []
+  }
+}
+```
+
+##### Response `200 OK` (Discrepancies Detected):
+```json
+{
+  "status": "success",
+  "data": {
+    "summary": {
+      "totalTransactionsChecked": 45,
+      "completedTransactionsChecked": 41,
+      "pendingTransactions": 2,
+      "failedTransactions": 2,
+      "validTransactions": 44,
+      "discrepantTransactionsCount": 1,
+      "discrepancyCount": 1,
+      "orphanedLedgerEntriesCount": 0,
+      "reconciliationStatus": "DISCREPANCIES_DETECTED",
+      "checkedAt": "2026-10-26T18:15:38.123Z"
+    },
+    "findings": [
+      {
+        "transactionId": "b1b74dc8-...",
+        "transactionType": "deposit",
+        "status": "completed",
+        "issueType": "AMOUNT_MISMATCH",
+        "explanation": "Deposit entry amount (400.0000) does not equal transaction amount (999.0000).",
+        "details": {
+          "entryAmount": "400.0000",
+          "transactionAmount": "999.0000"
+        }
+      }
+    ]
+  }
+}
+```
+
+##### Limitations:
+- The reconciliation endpoint is strictly **read-only**. It identifies discrepancies but never modifies or deletes ledger entries, preserving the database immutability rules.
+- Operational remediation of reported discrepancies must be handled via offsetting corrective transactions.
 
 ---
 
@@ -291,6 +385,7 @@ Tests cover:
 - Inactive / frozen account restrictions across all transaction types
 - Ledger immutability (no delete route and PostgreSQL rule-based blocks)
 - Idempotency suite (missing/invalid header, identical retries, 409 conflicts, rollback on failure, concurrent races)
+- Ledger reconciliation engine (read-only balance audits, missing/extra postings, wrong accounts/directions, amount mismatches, currency inconsistencies, and non-completed transaction guards)
 
 ---
 
@@ -308,16 +403,20 @@ src/
 │   ├── account.model.js      # Account DB queries
 │   ├── transaction.model.js  # Transaction DB queries
 │   ├── ledger-entry.model.js # Ledger DB queries (append-only)
-│   └── idempotency.model.js  # Idempotency key persistence, hash, & lifecycle
+│   ├── idempotency.model.js  # Idempotency key persistence, hash, & lifecycle
+│   └── reconciliation.model.js # Aggregated reconciliation inspection queries
 ├── services/
 │   ├── account.service.js    # Account business logic
-│   └── transaction.service.js# Transfer/deposit/withdrawal logic + ACID transactions
+│   ├── transaction.service.js# Transfer/deposit/withdrawal logic + ACID transactions
+│   └── reconciliation.service.js # Read-only double-entry verification engine
 ├── controllers/
 │   ├── account.controller.js
-│   └── transaction.controller.js
+│   ├── transaction.controller.js
+│   └── report.controller.js
 ├── routes/
 │   ├── account.routes.js
-│   └── transaction.routes.js
+│   ├── transaction.routes.js
+│   └── report.routes.js
 └── middleware/
     ├── validation.js          # Joi schemas
     ├── idempotency.js         # Header validation & IdempotencyModel re-export

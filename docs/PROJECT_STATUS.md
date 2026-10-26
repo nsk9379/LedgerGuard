@@ -1,6 +1,6 @@
 # Project Status: LedgerGuard — Banking Transaction Integrity System
 
-**Current Stage:** Stage 4 — Robust Idempotency Implementation  
+**Current Stage:** Stage 5 — Read-Only Ledger Reconciliation Engine  
 **Date:** October 26, 2026  
 **Git Branch:** `ledgerguard-development`  
 **Upstream Base:** `https://github.com/KONDIUMAVARALAKSHMI/double-entry-ledger-api.git` (tracked as `upstream`)  
@@ -34,11 +34,24 @@
   - **Additive Migration:** Added `idempotency_keys` table with primary key uniqueness on `key`, `payload_hash VARCHAR(64)`, `status VARCHAR(10) CHECK ('pending', 'resolved')`, `response JSONB`, `created_at`, `expires_at` (24h default), and index on `expires_at`.
   - **Middleware ([`src/middleware/idempotency.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/middleware/idempotency.js)):** Validates presence and strict format (`^[A-Za-z0-9\-_.]{1,255}$`) of `Idempotency-Key` header, returning HTTP 400 on violations.
   - **Model ([`src/models/idempotency.model.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/models/idempotency.model.js)):** Deterministic SHA-256 payload hashing (`String(amount)` avoids float rounding loss). Atomic reservation via `client.query` inside `SAVEPOINT sp_idempotency` catching PostgreSQL `23505` unique violations.
-  - **Controller & Service Coordination ([`src/controllers/transaction.controller.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/controllers/transaction.controller.js), [`src/services/transaction.service.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/services/transaction.service.js)):** Key reservation and transfer ledger writes share the exact same database transaction (`transferWithClient`). If the transfer fails (e.g. 422 insufficient funds), transaction rollback automatically drops the pending key reservation, allowing retry.
+  - **Controller & Service Coordination ([`src/controllers/transaction.controller.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/controllers/transaction.controller.js), [`src/services/transaction.service.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/services/transaction.service.js)):** Key reservation and transfer ledger writes share the exact same database transaction (`transferWithClient`).
   - **Payload Conflict Handling:** When an existing key is presented with a different payload hash, HTTP 409 Conflict is returned immediately with zero writes.
   - **Replay Response:** When an identical key and payload are presented, HTTP 200 OK with `"replayed": true` is returned with the cached transaction result; no additional transaction or ledger entries are created.
   - **Concurrent Request Handling:** A losing concurrent request catching `23505` polls up to 2 seconds for resolution and returns the resolved response (200 OK, `replayed: true`).
-  - **Test Suite Expanded:** 9 new idempotency tests added covering headers, formats, replays, 409 conflicts, rollback on failure, and concurrent race conditions. All 44 tests passing.
+  - **Test Suite Expanded:** 9 new idempotency tests added. All 44 tests passing.
+- **Stage 5: Read-Only Ledger Reconciliation Engine (Completed):**
+  - **Endpoint Added:** `GET /reports/reconciliation` (implemented in [`src/routes/report.routes.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/routes/report.routes.js) and [`src/controllers/report.controller.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/controllers/report.controller.js)).
+  - **Efficient SQL Aggregation ([`src/models/reconciliation.model.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/models/reconciliation.model.js)):** Single query joins `transactions` with source/destination `accounts` and aggregates `ledger_entries` via `json_agg()`. Runs checks for orphaned ledger entries.
+  - **Verification Rules Engine ([`src/services/reconciliation.service.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/services/reconciliation.service.js)):**
+    - `transfer`: Exactly 1 debit for source and 1 credit for destination; both amounts equal transaction amount.
+    - `deposit`: Exactly 1 credit for destination; amount equals transaction amount.
+    - `withdrawal`: Exactly 1 debit for source; amount equals transaction amount.
+    - `pending` / `failed`: Must have 0 ledger entries. Non-completed transactions with entries are flagged as `UNEXPECTED_ENTRIES_FOR_NON_COMPLETED_TRANSACTION`.
+    - Exact DB numeric semantics: Compares amounts using exact normalized decimal strings without JavaScript floating-point roundoff.
+    - Schema currency consistency: Validates that accounts and transactions match currency, detecting cross-currency anomalies.
+  - **Detection Capabilities:** Flags `MISSING_LEDGER_ENTRIES`, `EXTRA_LEDGER_ENTRIES`, `WRONG_DIRECTION`, `WRONG_ACCOUNT`, `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `UNEXPECTED_ENTRIES_FOR_NON_COMPLETED_TRANSACTION`, and `ORPHANED_LEDGER_ENTRIES`.
+  - **Strictly Read-Only:** Does not update, delete, or repair ledger entries, respecting PostgreSQL immutability rules.
+  - **Integration Tests Added:** 10 new integration tests covering baseline balanced state, parameter validation, pending/failed zero-posting checks, missing entry detection, unexpected entry detection, amount mismatches, wrong account assignments, currency discrepancies, and database read-only invariants. All 54 tests passing.
 
 ---
 
@@ -55,6 +68,7 @@
 | **Database Seeding** | `npm run db:seed` | Exit code 0. Demo records created in `ledgerguard_dev`. |
 | **Seed Idempotency** | `npm run db:seed` (second run) | Exit code 0. Skipped duplicate seeding cleanly. |
 | **Test Suite Run (Stage 4)** | `npm test` | Exit code 0. 1 test suite, 44 tests passed (35 core + 9 idempotency tests). |
+| **Test Suite Run (Stage 5)** | `npm test` | Exit code 0. 1 test suite, 54 tests passed (44 previous + 10 reconciliation tests). |
 
 ---
 
@@ -80,14 +94,15 @@
 | **BLK-02** | Local PostgreSQL DB not initialized | RESOLVED | Migrated and seeded `ledgerguard_dev`. |
 | **BLK-03** | Deadlock hazard on bi-directional transfers | RESOLVED | Fixed in Stage 3 with deterministic UUID sort order in `TransactionService`. |
 | **BLK-04** | Lack of Idempotency Mechanism | RESOLVED | Fixed in Stage 4 with PostgreSQL-backed atomic idempotency for `POST /transfers`. |
-| **BLK-05** | Single-entry deposits and withdrawals | Medium | Implement system vault / clearing accounts to maintain global double-entry parity. |
-| **BLK-06** | Floating-point precision risk (`parseFloat`) | Low/Med | DB-level arithmetic active in PostgreSQL (`NUMERIC(20,4)`). Service hashes use `String(amount)`. |
+| **BLK-05** | Lack of Ledger Integrity & Reconciliation Engine | RESOLVED | Fixed in Stage 5 with `GET /reports/reconciliation` read-only auditor. |
+| **BLK-06** | Single-entry deposits and withdrawals | Medium | Implement system vault / clearing accounts to maintain global double-entry parity. |
+| **BLK-07** | Floating-point precision risk (`parseFloat`) | Low | DB-level arithmetic active in PostgreSQL (`NUMERIC(20,4)`). Hash and reconciliation use exact normalized decimal strings. |
 
 ---
 
 ## 5. Next Recommended Step
 
-**Phase 5: Reconciliation & Integrity Monitoring Engine**
-1. Implement local background integrity verification queries (detect unbalanced transactions where debit != credit).
-2. Implement ledger checksum / audit log validation to verify running balances against sum of ledger entries.
-3. Add automated cleanup job for expired `idempotency_keys` (`expires_at < NOW()`).
+**Phase 6: Minimal Local Dashboard (EJS)**
+1. Implement a local-only administration and audit dashboard using server-rendered EJS templates.
+2. Provide views for account lists, ledger inspection, transaction submission, and live reconciliation health reports.
+3. Keep the dashboard local without external dependencies or cloud assets.
