@@ -1,0 +1,8 @@
+* [33m1bb240f[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mledgerguard-development[m[33m)[m Final audit and handoff
+* [33m7d1e7fd[m Build the EJS dashboard
+* [33m91cee46[m Implement reconciliation
+* [33m9c18c68[m Feature added - Add idempotent transfers
+* [33m53531b3[m Validate the banking foundation
+* [33me4914b9[m Configured local PostgreSQL
+* [33mca79017[m Completed initial setup
+* [33m7669924[m[33m ([m[1;31mupstream/main[m[33m, [m[1;31mupstream/HEAD[m[33m, [m[1;31morigin/main[m[33m, [m[1;32mmain[m[33m)[m feat: initial commit of Double-Entry Ledger API
