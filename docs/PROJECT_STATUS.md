@@ -1,6 +1,6 @@
 # Project Status: LedgerGuard — Banking Transaction Integrity System
 
-**Current Stage:** Stage 3 — Correctness Review & Transaction Integrity Hardening  
+**Current Stage:** Stage 4 — Robust Idempotency Implementation  
 **Date:** October 26, 2026  
 **Git Branch:** `ledgerguard-development`  
 **Upstream Base:** `https://github.com/KONDIUMAVARALAKSHMI/double-entry-ledger-api.git` (tracked as `upstream`)  
@@ -24,14 +24,21 @@
   - Executed `npm run db:migrate` and verified rerun idempotency.
   - Executed `npm run db:seed` once, verified demo data creation, and confirmed that rerun safely skips duplication.
 - **Stage 3: Correctness Review & Transaction Integrity Hardening (Completed):**
-  - **Deadlock fix:** [`src/services/transaction.service.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/services/transaction.service.js) — `SELECT ... FOR UPDATE` locks now acquired in deterministic ascending UUID order. Concurrent bi-directional transfers can no longer create circular waits.
-  - **Currency validation enforced:** Deposits, withdrawals, and transfers now reject transactions whose requested currency differs from the account's stored currency. Cross-currency transfers (e.g. INR → USD) are explicitly blocked.
-  - **DB-level NUMERIC balance check:** Added `AccountModel.checkSufficientFunds()` that compares `amount >= $2::NUMERIC(20,4)` inside PostgreSQL. The application no longer relies on `parseFloat` for the funds-availability decision, eliminating JS float rounding risks.
-  - **Ledger immutability verified:** Tests confirmed that direct SQL `UPDATE` and `DELETE` on `ledger_entries` silently return `rowCount = 0` and leave data unchanged, proving the `DO INSTEAD NOTHING` DB rules work correctly.
-  - **INR localization (additive migration):** `accounts` and `transactions` default currency changed to `INR`. Demo records (Alice Checking Account, Bob Savings Account, Initial seed deposit) migrated to INR via rerunnable `WHERE description IN (...)` conditional `UPDATE`. 16 historical test accounts with blank descriptions left untouched. `npm run db:migrate` succeeded twice (idempotent).
-  - **Self-transfer guard moved before DB connection:** Prevents pool exhaustion on that rejection path.
-  - **Tests expanded from 20 → 35.** All 35 passed (`npm test`, exit code 0).
-  - Executed full test suite (`npm test`); all 20 tests passed.
+  - **Deadlock fix:** [`src/services/transaction.service.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/services/transaction.service.js) — `SELECT ... FOR UPDATE` locks acquired in deterministic ascending UUID order. Concurrent bi-directional transfers cannot deadlock.
+  - **Currency validation enforced:** Cross-currency transfers explicitly blocked.
+  - **DB-level NUMERIC balance check:** Added `AccountModel.checkSufficientFunds()` comparing `amount >= $2::NUMERIC(20,4)` in PostgreSQL.
+  - **Ledger immutability verified:** Rules `no_update_ledger` and `no_delete_ledger` confirmed active via direct SQL attempts.
+  - **INR localization:** Default currency set to `INR`.
+  - **Test expansion:** Suite grew from 20 to 35 tests, all passing.
+- **Stage 4: Robust Idempotency for POST /transfers (Completed):**
+  - **Additive Migration:** Added `idempotency_keys` table with primary key uniqueness on `key`, `payload_hash VARCHAR(64)`, `status VARCHAR(10) CHECK ('pending', 'resolved')`, `response JSONB`, `created_at`, `expires_at` (24h default), and index on `expires_at`.
+  - **Middleware ([`src/middleware/idempotency.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/middleware/idempotency.js)):** Validates presence and strict format (`^[A-Za-z0-9\-_.]{1,255}$`) of `Idempotency-Key` header, returning HTTP 400 on violations.
+  - **Model ([`src/models/idempotency.model.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/models/idempotency.model.js)):** Deterministic SHA-256 payload hashing (`String(amount)` avoids float rounding loss). Atomic reservation via `client.query` inside `SAVEPOINT sp_idempotency` catching PostgreSQL `23505` unique violations.
+  - **Controller & Service Coordination ([`src/controllers/transaction.controller.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/controllers/transaction.controller.js), [`src/services/transaction.service.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/services/transaction.service.js)):** Key reservation and transfer ledger writes share the exact same database transaction (`transferWithClient`). If the transfer fails (e.g. 422 insufficient funds), transaction rollback automatically drops the pending key reservation, allowing retry.
+  - **Payload Conflict Handling:** When an existing key is presented with a different payload hash, HTTP 409 Conflict is returned immediately with zero writes.
+  - **Replay Response:** When an identical key and payload are presented, HTTP 200 OK with `"replayed": true` is returned with the cached transaction result; no additional transaction or ledger entries are created.
+  - **Concurrent Request Handling:** A losing concurrent request catching `23505` polls up to 2 seconds for resolution and returns the resolved response (200 OK, `replayed: true`).
+  - **Test Suite Expanded:** 9 new idempotency tests added covering headers, formats, replays, 409 conflicts, rollback on failure, and concurrent race conditions. All 44 tests passing.
 
 ---
 
@@ -40,13 +47,14 @@
 | Step | Command | Result / Verification |
 |------|---------|-----------------------|
 | **Dependency Install** | `npm install` | Exit code 0. Added 406 packages. |
-| **Connectivity Check** | `node -e "const pool = require('./src/config/database'); pool.query('SELECT current_database(), current_user').then(res => { console.log(res.rows[0]); pool.end(); })"` | Exit code 0. Connected to `ledgerguard_dev` as user `postgres`. |
-| **Initial Schema Check** | `node -e "... SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ..."` | Exit code 0. Initial table count: 0 tables. |
-| **Database Migration** | `npm run db:migrate` | Exit code 0. Created tables `accounts`, `transactions`, `ledger_entries`, indexes, and immutability rules `no_update_ledger`, `no_delete_ledger`. |
-| **Migration Idempotency** | `npm run db:migrate` (second run) | Exit code 0. Confirmed safe rerun without errors or duplication. |
-| **Database Seeding** | `npm run db:seed` | Exit code 0. Inserted Alice Checking (`fcf238bc-ea3d-480b-9193-871708715299`) and Bob Savings (`a67b6cb7-9bca-4627-9e3b-76994b6c6623`), plus initial deposit of 1000.0000 USD. |
-| **Seed Idempotency** | `npm run db:seed` (second run) | Exit code 0. Output: `ℹ️ Seed data already present. Skipping seeding to prevent duplicates.` |
-| **Test Suite Run** | `npm test` | Exit code 0. 1 test suite, 20 tests passed. |
+| **Connectivity Check** | `node -e "const pool = require('./src/config/database'); ..."` | Exit code 0. Connected to `ledgerguard_dev` as user `postgres`. |
+| **Initial Schema Check** | `node -e "... SELECT table_name ..."` | Exit code 0. Initial table count: 0 tables. |
+| **Database Migration (Initial)** | `npm run db:migrate` | Exit code 0. Created tables `accounts`, `transactions`, `ledger_entries`, indexes, and immutability rules. |
+| **Database Migration (Idempotency)** | `npm run db:migrate` | Exit code 0. Created `idempotency_keys` table and `idx_idempotency_expires_at` index. |
+| **Migration Idempotency** | `npm run db:migrate` (second run) | Exit code 0. Confirmed safe rerun without errors or duplicate table attempts. |
+| **Database Seeding** | `npm run db:seed` | Exit code 0. Demo records created in `ledgerguard_dev`. |
+| **Seed Idempotency** | `npm run db:seed` (second run) | Exit code 0. Skipped duplicate seeding cleanly. |
+| **Test Suite Run (Stage 4)** | `npm test` | Exit code 0. 1 test suite, 44 tests passed (35 core + 9 idempotency tests). |
 
 ---
 
@@ -54,18 +62,13 @@
 
 - **Account 1 (Alice):**
   - ID: `fcf238bc-ea3d-480b-9193-871708715299`
-  - Type: `checking`, Currency: `USD`, Status: `active`
-  - Current Balance: `1000.0000` (from seed deposit)
+  - Type: `checking`, Currency: `INR`, Status: `active`
 - **Account 2 (Bob):**
   - ID: `a67b6cb7-9bca-4627-9e3b-76994b6c6623`
-  - Type: `savings`, Currency: `USD`, Status: `active`
-  - Current Balance: `0.0000`
+  - Type: `savings`, Currency: `INR`, Status: `active`
 - **Initial Transaction:**
   - ID: `0ee82b85-815b-4aa1-8848-44dd3690a20b`
-  - Type: `deposit`, Amount: `1000.0000 USD`, Status: `completed`
-- **Initial Ledger Entry:**
-  - ID: `347f8418-a095-46ea-9360-2c3927fdc4e1`
-  - Account: `fcf238bc-ea3d-480b-9193-871708715299`, Entry Type: `credit`, Amount: `1000.0000`
+  - Type: `deposit`, Amount: `1000.0000 INR`, Status: `completed`
 
 ---
 
@@ -75,16 +78,16 @@
 |------------|-------------|----------|-----------------|
 | **BLK-01** | Dependencies not installed | RESOLVED | Completed via `npm install`. |
 | **BLK-02** | Local PostgreSQL DB not initialized | RESOLVED | Migrated and seeded `ledgerguard_dev`. |
-| **BLK-03** | Deadlock hazard on bi-directional transfers | High | Implement deterministic account lock ordering in `TransactionService` (sort account IDs before acquiring locks). |
-| **BLK-04** | Lack of Idempotency Mechanism | High | Add `Idempotency-Key` tracking table and middleware to prevent duplicate operations on network retries. |
+| **BLK-03** | Deadlock hazard on bi-directional transfers | RESOLVED | Fixed in Stage 3 with deterministic UUID sort order in `TransactionService`. |
+| **BLK-04** | Lack of Idempotency Mechanism | RESOLVED | Fixed in Stage 4 with PostgreSQL-backed atomic idempotency for `POST /transfers`. |
 | **BLK-05** | Single-entry deposits and withdrawals | Medium | Implement system vault / clearing accounts to maintain global double-entry parity. |
-| **BLK-06** | Floating-point precision risk (`parseFloat`) | Medium | Transition monetary logic to integer cents or arbitrary-precision strings to prevent JS float roundoff. |
+| **BLK-06** | Floating-point precision risk (`parseFloat`) | Low/Med | DB-level arithmetic active in PostgreSQL (`NUMERIC(20,4)`). Service hashes use `String(amount)`. |
 
 ---
 
 ## 5. Next Recommended Step
 
-**Phase 3: Core Transaction Integrity Implementation**
-1. Resolve **BLK-03** (Deadlock hazard): Implement deterministic row lock ordering (`min(id1, id2)` then `max(id1, id2)`) in [`src/services/transaction.service.js`](file:///d:/Projects/LedgerGuard/LedgerGuard/src/services/transaction.service.js).
-2. Add dedicated concurrency integration tests in `tests/` verifying simultaneous bi-directional transfers without deadlocks.
-3. Resolve **BLK-04** (Idempotency): Introduce idempotency tracking for transfer, deposit, and withdrawal endpoints.
+**Phase 5: Reconciliation & Integrity Monitoring Engine**
+1. Implement local background integrity verification queries (detect unbalanced transactions where debit != credit).
+2. Implement ledger checksum / audit log validation to verify running balances against sum of ledger entries.
+3. Add automated cleanup job for expired `idempotency_keys` (`expires_at < NOW()`).

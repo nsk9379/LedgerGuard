@@ -232,13 +232,16 @@ describe('POST /transfers', () => {
     const dst = await createAccount();
     await deposit(src.id, 1000);
 
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: src.id,
-      destinationAccountId: dst.id,
-      amount: 250,
-      currency: 'INR',
-      description: 'Test transfer',
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 250,
+        currency: 'INR',
+        description: 'Test transfer',
+      });
     expect(res.statusCode).toBe(201);
     expect(res.body.data).toHaveProperty('debitEntry');
     expect(res.body.data).toHaveProperty('creditEntry');
@@ -258,11 +261,14 @@ describe('POST /transfers', () => {
     const dst = await createAccount();
     await deposit(src.id, 100);
 
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: src.id,
-      destinationAccountId: dst.id,
-      amount: 500,
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 500,
+      });
     expect(res.statusCode).toBe(422);
     expect(res.body.message).toMatch(/insufficient/i);
   });
@@ -271,32 +277,41 @@ describe('POST /transfers', () => {
     const src = await createAccount();
     await deposit(src.id, 100);
 
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: src.id,
-      destinationAccountId: src.id,
-      amount: 50,
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: src.id,
+        amount: 50,
+      });
     expect(res.statusCode).toBe(400);
   });
 
   it('rejects transfer with non-existent source account', async () => {
     const dst = await createAccount();
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: uuidv4(),
-      destinationAccountId: dst.id,
-      amount: 50,
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: uuidv4(),
+        destinationAccountId: dst.id,
+        amount: 50,
+      });
     expect(res.statusCode).toBe(404);
   });
 
   it('rejects transfer with non-existent destination account', async () => {
     const src = await createAccount();
     await deposit(src.id, 500);
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: src.id,
-      destinationAccountId: uuidv4(),
-      amount: 50,
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: uuidv4(),
+        amount: 50,
+      });
     expect(res.statusCode).toBe(404);
   });
 
@@ -305,12 +320,15 @@ describe('POST /transfers', () => {
     const dst = await createAccount('savings', 'USD');
     await deposit(src.id, 1000);
 
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: src.id,
-      destinationAccountId: dst.id,
-      amount: 500,
-      currency: 'INR',
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 500,
+        currency: 'INR',
+      });
     expect(res.statusCode).toBe(422);
     expect(res.body.message).toMatch(/cross-currency/i);
   });
@@ -320,12 +338,15 @@ describe('POST /transfers', () => {
     const dst = await createAccount('checking', 'INR');
     await deposit(src.id, 1000);
 
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: src.id,
-      destinationAccountId: dst.id,
-      amount: 100,
-      currency: 'USD',
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 100,
+        currency: 'USD',
+      });
     expect(res.statusCode).toBe(422);
     expect(res.body.message).toMatch(/currency mismatch/i);
   });
@@ -364,12 +385,15 @@ describe('Inactive Account Restrictions', () => {
     await deposit(src.id, 500);
     await pool.query(`UPDATE accounts SET status = 'frozen' WHERE id = $1`, [src.id]);
 
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: src.id,
-      destinationAccountId: dst.id,
-      amount: 100,
-      currency: 'INR',
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 100,
+        currency: 'INR',
+      });
     expect(res.statusCode).toBe(422);
     expect(res.body.message).toMatch(/not active/i);
   });
@@ -380,12 +404,15 @@ describe('Inactive Account Restrictions', () => {
     await deposit(src.id, 500);
     await pool.query(`UPDATE accounts SET status = 'frozen' WHERE id = $1`, [dst.id]);
 
-    const res = await request(app).post('/transfers').send({
-      sourceAccountId: src.id,
-      destinationAccountId: dst.id,
-      amount: 100,
-      currency: 'INR',
-    });
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', uuidv4())
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 100,
+        currency: 'INR',
+      });
     expect(res.statusCode).toBe(422);
     expect(res.body.message).toMatch(/not active/i);
   });
@@ -471,3 +498,309 @@ describe('Ledger Immutability', () => {
     expect(entryCheck.rows.length).toBe(1);
   });
 });
+
+// ─── POST /transfers — Idempotency ──────────────────────────────────────────
+
+describe('POST /transfers — Idempotency', () => {
+  it('rejects request when Idempotency-Key header is missing', async () => {
+    const src = await createAccount();
+    const dst = await createAccount();
+    await deposit(src.id, 1000);
+
+    const res = await request(app)
+      .post('/transfers')
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 100,
+        currency: 'INR',
+      });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.status).toBe('error');
+    expect(res.body.message).toMatch(/Missing required header: Idempotency-Key/i);
+  });
+
+  it('rejects request when Idempotency-Key format contains spaces or illegal characters', async () => {
+    const src = await createAccount();
+    const dst = await createAccount();
+    await deposit(src.id, 1000);
+
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', 'invalid key with spaces!')
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 100,
+        currency: 'INR',
+      });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.status).toBe('error');
+    expect(res.body.message).toMatch(/Invalid Idempotency-Key/i);
+  });
+
+  it('rejects request when Idempotency-Key exceeds 255 characters', async () => {
+    const src = await createAccount();
+    const dst = await createAccount();
+    await deposit(src.id, 1000);
+
+    const longKey = 'a'.repeat(256);
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', longKey)
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 100,
+        currency: 'INR',
+      });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.status).toBe('error');
+    expect(res.body.message).toMatch(/Invalid Idempotency-Key/i);
+  });
+
+  it('processes normal transfer with valid Idempotency-Key and returns HTTP 201', async () => {
+    const src = await createAccount();
+    const dst = await createAccount();
+    await deposit(src.id, 1000);
+
+    const key = `key-initial-${uuidv4()}`;
+    const res = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 200,
+        currency: 'INR',
+        description: 'Initial transfer',
+      });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.status).toBe('success');
+    expect(res.body.replayed).toBeFalsy();
+    expect(res.body.data).toHaveProperty('transaction');
+    expect(res.body.data.transaction.status).toBe('completed');
+  });
+
+  it('returns original result (HTTP 200, replayed: true) on identical retry with same key and payload', async () => {
+    const src = await createAccount();
+    const dst = await createAccount();
+    await deposit(src.id, 1000);
+
+    const key = `key-retry-${uuidv4()}`;
+    const payload = {
+      sourceAccountId: src.id,
+      destinationAccountId: dst.id,
+      amount: 300,
+      currency: 'INR',
+      description: 'Rent payment retry test',
+    };
+
+    // First request
+    const firstRes = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send(payload);
+
+    expect(firstRes.statusCode).toBe(201);
+    const originalTxId = firstRes.body.data.transaction.id;
+
+    // Retry with identical key and identical payload
+    const retryRes = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send(payload);
+
+    expect(retryRes.statusCode).toBe(200);
+    expect(retryRes.body.status).toBe('success');
+    expect(retryRes.body.replayed).toBe(true);
+    expect(retryRes.body.data.transaction.id).toBe(originalTxId);
+
+    // Verify balances reflect ONLY ONE transfer (300 deducted, not 600)
+    const srcBal = await request(app).get(`/accounts/${src.id}`);
+    const dstBal = await request(app).get(`/accounts/${dst.id}`);
+    expect(parseFloat(srcBal.body.data.balance)).toBe(700);
+    expect(parseFloat(dstBal.body.data.balance)).toBe(300);
+
+    // Verify ledger has exactly 2 entries (1 debit, 1 credit) for this transaction
+    const ledgerCheck = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM ledger_entries WHERE transaction_id = $1`,
+      [originalTxId]
+    );
+    expect(ledgerCheck.rows[0].count).toBe(2);
+  });
+
+  it('returns HTTP 409 Conflict when same Idempotency-Key is reused with different amount', async () => {
+    const src = await createAccount();
+    const dst = await createAccount();
+    await deposit(src.id, 1000);
+
+    const key = `key-mismatch-amt-${uuidv4()}`;
+
+    // First request: amount 200
+    const firstRes = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 200,
+        currency: 'INR',
+      });
+    expect(firstRes.statusCode).toBe(201);
+
+    // Second request: same key, different amount (500)
+    const conflictRes = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst.id,
+        amount: 500,
+        currency: 'INR',
+      });
+
+    expect(conflictRes.statusCode).toBe(409);
+    expect(conflictRes.body.status).toBe('error');
+    expect(conflictRes.body.message).toMatch(/different request payload/i);
+
+    // Balances must not have been modified by the second request
+    const srcBal = await request(app).get(`/accounts/${src.id}`);
+    expect(parseFloat(srcBal.body.data.balance)).toBe(800);
+  });
+
+  it('returns HTTP 409 Conflict when same Idempotency-Key is reused with different destination account', async () => {
+    const src = await createAccount();
+    const dst1 = await createAccount();
+    const dst2 = await createAccount();
+    await deposit(src.id, 1000);
+
+    const key = `key-mismatch-dst-${uuidv4()}`;
+
+    // First request: to dst1
+    const firstRes = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst1.id,
+        amount: 150,
+        currency: 'INR',
+      });
+    expect(firstRes.statusCode).toBe(201);
+
+    // Second request: same key, but to dst2
+    const conflictRes = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send({
+        sourceAccountId: src.id,
+        destinationAccountId: dst2.id,
+        amount: 150,
+        currency: 'INR',
+      });
+
+    expect(conflictRes.statusCode).toBe(409);
+    expect(conflictRes.body.message).toMatch(/different request payload/i);
+
+    // dst2 must have 0 balance
+    const dst2Bal = await request(app).get(`/accounts/${dst2.id}`);
+    expect(parseFloat(dst2Bal.body.data.balance)).toBe(0);
+  });
+
+  it('rolls back key reservation on insufficient funds, permitting retry after deposit', async () => {
+    const src = await createAccount();
+    const dst = await createAccount();
+    // Only 50 in account
+    await deposit(src.id, 50);
+
+    const key = `key-rollback-${uuidv4()}`;
+    const payload = {
+      sourceAccountId: src.id,
+      destinationAccountId: dst.id,
+      amount: 200,
+      currency: 'INR',
+    };
+
+    // First attempt: should fail with 422 Insufficient funds
+    const failRes = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send(payload);
+
+    expect(failRes.statusCode).toBe(422);
+    expect(failRes.body.message).toMatch(/insufficient/i);
+
+    // Check that the key reservation was rolled back in the DB (not persisted)
+    const keyInDb = await pool.query(`SELECT * FROM idempotency_keys WHERE key = $1`, [key]);
+    expect(keyInDb.rows.length).toBe(0);
+
+    // Now deposit sufficient funds
+    await deposit(src.id, 500);
+
+    // Retry with the exact same Idempotency-Key and payload
+    const successRes = await request(app)
+      .post('/transfers')
+      .set('Idempotency-Key', key)
+      .send(payload);
+
+    expect(successRes.statusCode).toBe(201);
+    expect(successRes.body.status).toBe('success');
+
+    const srcBal = await request(app).get(`/accounts/${src.id}`);
+    expect(parseFloat(srcBal.body.data.balance)).toBe(350); // 50 + 500 - 200 = 350
+  });
+
+  it('handles concurrent identical transfer requests correctly without duplicate debits', async () => {
+    const src = await createAccount();
+    const dst = await createAccount();
+    await deposit(src.id, 1000);
+
+    const key = `key-concurrent-${uuidv4()}`;
+    const payload = {
+      sourceAccountId: src.id,
+      destinationAccountId: dst.id,
+      amount: 400,
+      currency: 'INR',
+      description: 'Concurrent race test',
+    };
+
+    // Send two identical requests concurrently
+    const [res1, res2] = await Promise.all([
+      request(app).post('/transfers').set('Idempotency-Key', key).send(payload),
+      request(app).post('/transfers').set('Idempotency-Key', key).send(payload),
+    ]);
+
+    // One must be 201 Created and the other must be 200 OK (replayed)
+    const statuses = [res1.statusCode, res2.statusCode].sort();
+    expect(statuses).toEqual([200, 201]);
+
+    const winner = res1.statusCode === 201 ? res1 : res2;
+    const loser = res1.statusCode === 200 ? res1 : res2;
+
+    expect(winner.body.status).toBe('success');
+    expect(loser.body.status).toBe('success');
+    expect(loser.body.replayed).toBe(true);
+    expect(loser.body.data.transaction.id).toBe(winner.body.data.transaction.id);
+
+    // Source balance must only be debited once: 1000 - 400 = 600
+    const srcBal = await request(app).get(`/accounts/${src.id}`);
+    expect(parseFloat(srcBal.body.data.balance)).toBe(600);
+
+    // Destination balance must only be credited once: 400
+    const dstBal = await request(app).get(`/accounts/${dst.id}`);
+    expect(parseFloat(dstBal.body.data.balance)).toBe(400);
+
+    // Exactly 2 ledger entries created total for this transaction
+    const ledgerCheck = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM ledger_entries WHERE transaction_id = $1`,
+      [winner.body.data.transaction.id]
+    );
+    expect(ledgerCheck.rows[0].count).toBe(2);
+  });
+});
+

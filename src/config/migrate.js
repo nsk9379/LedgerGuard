@@ -97,6 +97,28 @@ const createTables = async () => {
       END$$;
     `);
 
+    // ── Idempotency keys table (additive, rerunnable) ─────────────────────────
+    // PRIMARY KEY on `key` enforces uniqueness at the DB level.
+    // A concurrent INSERT on a duplicate key raises error code 23505,
+    // which the application detects and handles without a separate SELECT guard.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS idempotency_keys (
+        key          VARCHAR(255) PRIMARY KEY,
+        payload_hash VARCHAR(64)  NOT NULL,
+        status       VARCHAR(10)  NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending', 'resolved')),
+        response     JSONB,
+        created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        expires_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW() + INTERVAL '24 hours'
+      );
+    `);
+
+    // Index to support efficient expired-key cleanup (not yet automated, but prepared)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_idempotency_expires_at
+        ON idempotency_keys (expires_at);
+    `);
+
     await client.query('COMMIT');
     console.log('✅ Database migration completed successfully.');
   } catch (err) {

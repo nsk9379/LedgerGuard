@@ -5,6 +5,20 @@ const LedgerEntryModel = require('../models/ledger-entry.model');
 
 class TransactionService {
   /**
+   * Execute a transfer using a pre-opened DB client that is already inside
+   * a transaction (BEGIN has been called by the caller).
+   * The caller is responsible for COMMIT / ROLLBACK and client.release().
+   *
+   * This variant is used by the idempotency-aware controller so the key
+   * reservation INSERT and all transfer writes share one atomic transaction.
+   */
+  static async transferWithClient({ sourceAccountId, destinationAccountId, amount, currency, description, client }) {
+    return TransactionService._runTransfer({
+      sourceAccountId, destinationAccountId, amount, currency, description, client,
+    });
+  }
+
+  /**
    * Execute a transfer between two accounts.
    * Uses a single ACID transaction with REPEATABLE READ isolation.
    * Creates exactly two balanced ledger entries: one debit, one credit.
@@ -23,13 +37,33 @@ class TransactionService {
 
     const client = await pool.connect();
     try {
-      // Use REPEATABLE READ to prevent dirty reads and non-repeatable reads
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+      const result = await TransactionService._runTransfer({
+        sourceAccountId, destinationAccountId, amount, currency, description, client,
+      });
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 
-      // --- DEADLOCK-SAFE LOCK ACQUISITION ---
-      // Always acquire locks in deterministic ascending UUID order so two
-      // simultaneous cross-direction transfers cannot deadlock on circular waits.
-      const [firstId, secondId] = [sourceAccountId, destinationAccountId].sort();
+  /**
+   * Core transfer logic shared by transfer() and transferWithClient().
+   * Requires an open client already inside a BEGIN transaction.
+   */
+  static async _runTransfer({ sourceAccountId, destinationAccountId, amount, currency, description, client }) {
+    // Reject self-transfer (also checked in transfer(); kept here for transferWithClient() callers)
+    if (sourceAccountId === destinationAccountId) {
+      throw { statusCode: 400, message: 'Source and destination accounts must be different.' };
+    }
+
+    // Always acquire locks in deterministic ascending UUID order so two
+    // simultaneous cross-direction transfers cannot deadlock on circular waits.
+    const [firstId, secondId] = [sourceAccountId, destinationAccountId].sort();
 
       const firstLock = await client.query(
         `SELECT id, status, currency FROM accounts WHERE id = $1 FOR UPDATE`,
@@ -130,28 +164,20 @@ class TransactionService {
         client
       );
 
-      // Verify double-entry balance integrity using DB NUMERIC string comparison
-      // (debitEntry.amount and creditEntry.amount come back as NUMERIC strings from pg)
-      if (debitEntry.amount !== creditEntry.amount) {
-        throw { statusCode: 500, message: 'Double-entry integrity check failed.' };
-      }
-
-      // Mark transaction as completed
-      const completedTxn = await TransactionModel.updateStatus(transaction.id, 'completed', client);
-
-      await client.query('COMMIT');
-
-      return {
-        transaction: completedTxn,
-        debitEntry,
-        creditEntry,
-      };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+    // Verify double-entry balance integrity using DB NUMERIC string comparison
+    // (debitEntry.amount and creditEntry.amount come back as NUMERIC strings from pg)
+    if (debitEntry.amount !== creditEntry.amount) {
+      throw { statusCode: 500, message: 'Double-entry integrity check failed.' };
     }
+
+    // Mark transaction as completed
+    const completedTxn = await TransactionModel.updateStatus(transaction.id, 'completed', client);
+
+    return {
+      transaction: completedTxn,
+      debitEntry,
+      creditEntry,
+    };
   }
 
   /**

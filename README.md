@@ -181,26 +181,52 @@ Response `200`:
 
 ### Transactions
 
-#### Transfer (Double-Entry)
+#### Transfer (Double-Entry & Idempotent)
 ```
 POST /transfers
 Content-Type: application/json
+Idempotency-Key: txn-rent-oct-2026-001
 
 {
   "sourceAccountId": "uuid",
   "destinationAccountId": "uuid",
   "amount": 500.00,
-  "currency": "USD",
+  "currency": "INR",
   "description": "Rent payment"
 }
 ```
 
-Response `201` — creates exactly one debit and one credit entry:
+##### `Idempotency-Key` Header Specification (Required)
+Every transfer request **must** supply an `Idempotency-Key` HTTP header.
+- **Format**: 1–255 characters matching `^[A-Za-z0-9\-_.]{1,255}$` (alphanumerics, hyphens, underscores, dots).
+- **First Submission (Fresh)**: Returns `201 Created` with the transaction and balanced ledger entries.
+- **Identical Replay**: Resending the identical key with the exact same normalized payload returns `200 OK` with `"replayed": true` and the original transaction data. No extra debits, credits, or transactions are created.
+- **Payload Mismatch (Conflict)**: Resending the same key with different transfer parameters (e.g., changed amount, source, or recipient) returns `409 Conflict` and makes no database modifications.
+- **Atomic Reservation**: Key reservation and transfer writes share a single PostgreSQL transaction. Failed transfers (e.g. insufficient funds) roll back both the transaction and the key reservation, permitting immediate retry.
+- **Concurrent Races**: Handled via database-level primary key uniqueness (`23505` error catch and savepoint/polling), guaranteeing zero duplicate execution even under simultaneous requests.
+- **Retention**: Keys are persisted in `idempotency_keys` with a 24-hour expiration (`expires_at`).
+
+Response `201 Created` (fresh request):
 ```json
 {
   "status": "success",
+  "message": "Transfer completed successfully.",
   "data": {
-    "transaction": { "id": "uuid", "status": "completed", ... },
+    "transaction": { "id": "uuid", "type": "transfer", "status": "completed", ... },
+    "debitEntry":  { "entry_type": "debit",  "amount": "500.0000" },
+    "creditEntry": { "entry_type": "credit", "amount": "500.0000" }
+  }
+}
+```
+
+Response `200 OK` (replayed retry):
+```json
+{
+  "status": "success",
+  "message": "Transfer completed successfully.",
+  "replayed": true,
+  "data": {
+    "transaction": { "id": "uuid", "type": "transfer", "status": "completed", ... },
     "debitEntry":  { "entry_type": "debit",  "amount": "500.0000" },
     "creditEntry": { "entry_type": "credit", "amount": "500.0000" }
   }
@@ -239,9 +265,10 @@ Content-Type: application/json
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Invalid request body / validation error |
+| 400 | Invalid request body or missing/malformed `Idempotency-Key` header |
 | 404 | Account not found |
-| 422 | Business rule violation (e.g. insufficient funds, frozen account) |
+| 409 | Conflict: `Idempotency-Key` was already used with a different payload |
+| 422 | Business rule violation (e.g. insufficient funds, frozen account, cross-currency) |
 | 500 | Internal server error |
 
 ---
@@ -255,12 +282,15 @@ npm test
 ```
 
 Tests cover:
-- Account creation and retrieval
+- Health check and environment readiness
+- Account creation, validation, and retrieval with balance
 - Deposits, withdrawals, transfers
-- Insufficient funds rejection
+- Insufficient funds rejection and zero-balance guards
 - Same-account transfer rejection
-- Ledger immutability (no delete route)
-- Balance calculation accuracy
+- Cross-currency transfer rejections
+- Inactive / frozen account restrictions across all transaction types
+- Ledger immutability (no delete route and PostgreSQL rule-based blocks)
+- Idempotency suite (missing/invalid header, identical retries, 409 conflicts, rollback on failure, concurrent races)
 
 ---
 
@@ -272,15 +302,16 @@ src/
 ├── server.js                 # Entry point (DB connect + listen)
 ├── config/
 │   ├── database.js           # pg Pool
-│   ├── migrate.js            # Schema migration
+│   ├── migrate.js            # Additive schema migrations
 │   └── seed.js               # Demo data
 ├── models/
 │   ├── account.model.js      # Account DB queries
 │   ├── transaction.model.js  # Transaction DB queries
-│   └── ledger-entry.model.js # Ledger DB queries (append-only)
+│   ├── ledger-entry.model.js # Ledger DB queries (append-only)
+│   └── idempotency.model.js  # Idempotency key persistence, hash, & lifecycle
 ├── services/
 │   ├── account.service.js    # Account business logic
-│   └── transaction.service.js# Transfer/deposit/withdrawal logic + ACID
+│   └── transaction.service.js# Transfer/deposit/withdrawal logic + ACID transactions
 ├── controllers/
 │   ├── account.controller.js
 │   └── transaction.controller.js
@@ -289,6 +320,7 @@ src/
 │   └── transaction.routes.js
 └── middleware/
     ├── validation.js          # Joi schemas
+    ├── idempotency.js         # Header validation & IdempotencyModel re-export
     └── errorHandler.js        # Global error handler
 ```
 
